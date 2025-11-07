@@ -38,6 +38,7 @@ async def update_voice_status():
             continue
             
         for vc in guild.voice_channels:
+            # Убеждаемся, что бот может видеть войс-канал
             if vc.permissions_for(guild.me).connect:
                 total += len([m for m in vc.members if not m.bot])
 
@@ -74,7 +75,7 @@ async def play_next(interaction: discord.Interaction):
         await asyncio.sleep(60)
         
         # Повторная проверка: если все еще не играет, то отключаемся
-        if not vc.is_playing() and not vc.is_paused():
+        if vc and not vc.is_playing() and not vc.is_paused():
             await interaction.channel.send("🎵 Очередь пуста — отключаюсь.")
             await vc.disconnect()
 
@@ -83,13 +84,15 @@ async def play_next(interaction: discord.Interaction):
 @bot.tree.command(name="play", description="Проиграть трек по ссылке или названию.")
 @discord.app_commands.describe(query="Ссылка на YouTube/другой сайт или поисковый запрос")
 async def play_slash(interaction: discord.Interaction, query: str):
-    await interaction.response.defer() # Откладываем ответ
+    # !!! ФИКС ОШИБКИ 404: НЕМЕДЛЕННЫЙ ОТВЕТ НА ВЗАИМОДЕЙСТВИЕ !!!
+    await interaction.response.defer(thinking=True) 
     
     if not interaction.user.voice:
         return await interaction.followup.send("❌ Ты не в голосовом канале!")
     
     # Подключение к каналу
     if not interaction.guild.voice_client:
+        # Убедимся, что бот подключается к каналу пользователя
         await interaction.user.voice.channel.connect()
     vc = interaction.guild.voice_client
 
