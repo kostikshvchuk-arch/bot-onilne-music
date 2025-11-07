@@ -119,4 +119,4 @@ async def queue(ctx):
     text = "\n".join([f"{i+1}. {t[1]}" for i, t in enumerate(queues[guild_id])])
     await ctx.send(f"📜 **Очередь треков:**\n{text}")
 
-bot.run(os.getenv("TOKEN_БОТА"))
+bot.run(os.getenv("TOKEN_BOT"))
