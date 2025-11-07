@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import yt_dlp
 import asyncio
+import os
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -118,4 +119,4 @@ async def queue(ctx):
     text = "\n".join([f"{i+1}. {t[1]}" for i, t in enumerate(queues[guild_id])])
     await ctx.send(f"📜 **Очередь треков:**\n{text}")
 
-bot.run("MTQzNjQ1ODIyNzgzODYxOTY2OA.GuW_-k.qCyMEpfHM67OALe8wcJii-enOPHndo_XrZEqFU")
+bot.run(os.getenv("TOKEN_БОТА"))
