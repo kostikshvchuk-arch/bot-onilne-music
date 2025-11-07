@@ -11,7 +11,7 @@ intents.voice_states = True
 intents.members = True
 intents.guilds = True
 
-# СОЗДАНИЕ БОТА: Смена префикса на '!' (чтобы / не конфликтовал с slash-командами)
+# СОЗДАНИЕ БОТА: Префикс '!' (чтобы / не конфликтовал со slash-командами)
 bot = commands.Bot(command_prefix="!", intents=intents)
 queues = {}
 
@@ -20,9 +20,8 @@ queues = {}
 async def on_ready():
     print(f"✅ Бот запущен как {bot.user}")
     
-    # !!! КЛЮЧЕВОЙ КОД ДЛЯ СИНХРОНИЗАЦИИ СЛЭШ-КОМАНД !!!
+    # КЛЮЧЕВОЙ КОД ДЛЯ СИНХРОНИЗАЦИИ СЛЭШ-КОМАНД
     try:
-        # Синхронизация команд с Discord API
         synced = await bot.tree.sync()
         print(f"📝 Синхронизировано {len(synced)} слэш-команд.")
     except Exception as e:
@@ -53,7 +52,7 @@ async def update_voice_status():
 
 # ========== МУЗЫКАЛЬНЫЕ СЛЭШ-КОМАНДЫ (COMMAND TREE) ==========
 
-# Вспомогательная функция (адаптирована для слэш-команд)
+# Вспомогательная функция (С ИСПРАВЛЕНИЕМ ОТКЛЮЧЕНИЯ!)
 async def play_next(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     vc = interaction.guild.voice_client
@@ -66,9 +65,18 @@ async def play_next(interaction: discord.Interaction):
             after=lambda e: asyncio.run_coroutine_threadsafe(play_next(interaction), bot.loop)
         )
         await interaction.channel.send(f"▶️ Сейчас играет: **{title}**")
-    else:
-        await interaction.channel.send("🎵 Очередь пуста — отключаюсь.")
-        await vc.disconnect()
+    
+    # ИСПРАВЛЕНИЕ: ДОБАВЛЯЕМ ПРОВЕРКУ И ЗАДЕРЖКУ ПЕРЕД ОТКЛЮЧЕНИЕМ
+    elif vc and not vc.is_playing() and not vc.is_paused():
+        
+        await interaction.channel.send("💡 Очередь пуста. Отключусь через 60 секунд, если ничего не добавить.")
+        
+        await asyncio.sleep(60)
+        
+        # Повторная проверка: если все еще не играет, то отключаемся
+        if not vc.is_playing() and not vc.is_paused():
+            await interaction.channel.send("🎵 Очередь пуста — отключаюсь.")
+            await vc.disconnect()
 
 
 # КОМАНДА /play
