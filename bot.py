@@ -3,6 +3,7 @@ from discord.ext import commands, tasks
 import yt_dlp
 import asyncio
 import os
+import re # Импортируем для очистки URL
 
 # ИНТЕНТЫ
 intents = discord.Intents.default()
@@ -83,7 +84,6 @@ async def _play_worker(interaction: discord.Interaction, query: str):
     
     # 1. Проверки
     if not interaction.user.voice:
-        # Используем followup.send, так как defer уже был отправлен в play_slash
         return await interaction.followup.send("❌ Ты не в голосовом канале!")
     
     # 2. Подключение к каналу
@@ -97,22 +97,31 @@ async def _play_worker(interaction: discord.Interaction, query: str):
 
     vc = interaction.guild.voice_client
     
-    # 3. Поиск и извлечение информации
+    # 3. УЛУЧШЕНИЕ: Очистка URL от лишних параметров, таких как &list= или &start_radio=
+    if re.match(r'https?://(?:www\.)?youtube\.com/watch\?v=', query) or re.match(r'https?://youtu\.be/', query):
+        # Удаляем все, что идет после v=... или youtu.be/... до & (включая &)
+        query = re.sub(r'(\?|&)(list|start_radio|index)=.*$', '', query)
+        query = query.split('&')[0] # Очищаем все остальные параметры
+
+    # 4. Поиск и извлечение информации
     ydl_opts = {"format": "bestaudio/best", "quiet": True, "default_search": "auto"}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # ydl.extract_info - самая долгая операция!
             info = await asyncio.to_thread(ydl.extract_info, query, download=False)
             
+            # Если это плейлист (Mix или длинная ссылка), берем первый трек
             if "entries" in info:
+                # Ограничиваемся первым треком из-за потенциально очень больших плейлистов
                 info = info["entries"][0]
+            
             stream_url = info["url"]
             title = info.get("title", "Неизвестный трек")
     except Exception as e:
         print(f"Ошибка YT-DLP: {e}")
         return await interaction.followup.send("❌ Не удалось найти или загрузить трек. Попробуйте другую ссылку.")
 
-    # 4. Добавление в очередь и воспроизведение
+    # 5. Добавление в очередь и воспроизведение
     guild_id = interaction.guild.id
     if guild_id not in queues:
         queues[guild_id] = []
@@ -139,8 +148,7 @@ async def play_slash(interaction: discord.Interaction, query: str):
     bot.loop.create_task(_play_worker(interaction, query))
 
 
-# КОМАНДЫ /pause, /resume, /stop, /queue
-# ... (Остальные команды без изменений) ...
+# КОМАНДЫ /pause, /resume, /stop, /queue (без изменений)
 
 @bot.tree.command(name="pause", description="Поставить музыку на паузу.")
 async def pause_slash(interaction: discord.Interaction):
