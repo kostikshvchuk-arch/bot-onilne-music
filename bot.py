@@ -4,14 +4,14 @@ import yt_dlp
 import asyncio
 import os
 
-# 1. ИНТЕНТЫ (оставлены верными)
+# ИНТЕНТЫ
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 intents.members = True
 intents.guilds = True
 
-# 2. СОЗДАНИЕ БОТА: Смена префикса на '!' (чтобы / не конфликтовал)
+# СОЗДАНИЕ БОТА: Смена префикса на '!' (чтобы / не конфликтовал с slash-командами)
 bot = commands.Bot(command_prefix="!", intents=intents)
 queues = {}
 
@@ -20,7 +20,7 @@ queues = {}
 async def on_ready():
     print(f"✅ Бот запущен как {bot.user}")
     
-    # !!! НОВЫЙ КОД ДЛЯ СИНХРОНИЗАЦИИ СЛЭШ-КОМАНД !!!
+    # !!! КЛЮЧЕВОЙ КОД ДЛЯ СИНХРОНИЗАЦИИ СЛЭШ-КОМАНД !!!
     try:
         # Синхронизация команд с Discord API
         synced = await bot.tree.sync()
@@ -35,12 +35,10 @@ async def update_voice_status():
     """Считает людей в войсах и обновляет статус"""
     total = 0
     for guild in bot.guilds:
-        # Проверяем, что бот готов к работе
         if guild.unavailable:
             continue
             
         for vc in guild.voice_channels:
-            # Убедитесь, что бот имеет доступ к состоянию голоса
             if vc.permissions_for(guild.me).connect:
                 total += len([m for m in vc.members if not m.bot])
 
@@ -55,51 +53,44 @@ async def update_voice_status():
 
 # ========== МУЗЫКАЛЬНЫЕ СЛЭШ-КОМАНДЫ (COMMAND TREE) ==========
 
-# Вспомогательная функция (оставлена без изменений)
-async def play_next(ctx_or_interaction):
-    # Адаптируем к использованию в слэш-командах (ctx_or_interaction может быть Interaction)
-    guild_id = ctx_or_interaction.guild.id
-    vc = ctx_or_interaction.guild.voice_client if isinstance(ctx_or_interaction, discord.Interaction) else ctx_or_interaction.voice_client
+# Вспомогательная функция (адаптирована для слэш-команд)
+async def play_next(interaction: discord.Interaction):
+    guild_id = interaction.guild.id
+    vc = interaction.guild.voice_client
 
     if guild_id in queues and queues[guild_id]:
         url, title = queues[guild_id].pop(0)
         
-        # Используем ctx_or_interaction.channel.send для отправки сообщения
-        send_to = ctx_or_interaction.channel.send if isinstance(ctx_or_interaction, discord.Interaction) else ctx_or_interaction.send
-
         vc.play(
             discord.FFmpegPCMAudio(url, before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"),
-            after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx_or_interaction), bot.loop)
+            after=lambda e: asyncio.run_coroutine_threadsafe(play_next(interaction), bot.loop)
         )
-        await send_to(f"▶️ Сейчас играет: **{title}**")
+        await interaction.channel.send(f"▶️ Сейчас играет: **{title}**")
     else:
-        send_to = ctx_or_interaction.channel.send if isinstance(ctx_or_interaction, discord.Interaction) else ctx_or_interaction.send
-        await send_to("🎵 Очередь пуста — отключаюсь.")
+        await interaction.channel.send("🎵 Очередь пуста — отключаюсь.")
         await vc.disconnect()
 
 
-# ПЕРЕВОД НА СЛЭШ-КОМАНДУ
+# КОМАНДА /play
 @bot.tree.command(name="play", description="Проиграть трек по ссылке или названию.")
 @discord.app_commands.describe(query="Ссылка на YouTube/другой сайт или поисковый запрос")
 async def play_slash(interaction: discord.Interaction, query: str):
-    """Проиграть трек по ссылке или названию"""
-    await interaction.response.defer() # Откладываем ответ, так как поиск может занять время
-
+    await interaction.response.defer() # Откладываем ответ
+    
     if not interaction.user.voice:
         return await interaction.followup.send("❌ Ты не в голосовом канале!")
     
-    # 1. Подключение
+    # Подключение к каналу
     if not interaction.guild.voice_client:
         await interaction.user.voice.channel.connect()
     vc = interaction.guild.voice_client
 
-    # 2. Поиск и извлечение информации
+    # Поиск и извлечение информации
     ydl_opts = {"format": "bestaudio/best", "quiet": True, "default_search": "auto"}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(query, download=False)
             if "entries" in info:
-                # Если это плейлист или поиск, берем первый трек
                 info = info["entries"][0]
             stream_url = info["url"]
             title = info.get("title", "Неизвестный трек")
@@ -107,8 +98,7 @@ async def play_slash(interaction: discord.Interaction, query: str):
         print(f"Ошибка YT-DLP: {e}")
         return await interaction.followup.send("❌ Не удалось найти или загрузить трек.")
 
-
-    # 3. Добавление в очередь и воспроизведение
+    # Добавление в очередь и воспроизведение
     guild_id = interaction.guild.id
     if guild_id not in queues:
         queues[guild_id] = []
@@ -124,7 +114,7 @@ async def play_slash(interaction: discord.Interaction, query: str):
         await interaction.followup.send(f"▶️ Сейчас играет: **{title}**")
 
 
-# ПЕРЕВОД НА СЛЭШ-КОМАНДУ
+# КОМАНДА /pause
 @bot.tree.command(name="pause", description="Поставить музыку на паузу.")
 async def pause_slash(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -134,7 +124,7 @@ async def pause_slash(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("❌ Нечего ставить на паузу.")
 
-# ПЕРЕВОД НА СЛЭШ-КОМАНДУ
+# КОМАНДА /resume
 @bot.tree.command(name="resume", description="Продолжить воспроизведение.")
 async def resume_slash(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -144,7 +134,7 @@ async def resume_slash(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("❌ Музыка не на паузе.")
 
-# ПЕРЕВОД НА СЛЭШ-КОМАНДУ
+# КОМАНДА /stop
 @bot.tree.command(name="stop", description="Остановить музыку и отключить бота.")
 async def stop_slash(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -156,7 +146,7 @@ async def stop_slash(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("❌ Я не в голосовом канале.")
 
-# ПЕРЕВОД НА СЛЭШ-КОМАНДУ
+# КОМАНДА /queue
 @bot.tree.command(name="queue", description="Показать текущую очередь треков.")
 async def queue_slash(interaction: discord.Interaction):
     guild_id = interaction.guild.id
