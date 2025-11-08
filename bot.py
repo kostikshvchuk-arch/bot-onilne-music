@@ -3,7 +3,8 @@ from discord.ext import commands, tasks
 import yt_dlp
 import asyncio
 import os
-import re # Импортируем для очистки URL
+import re
+from discord import ui # Импортируем для кнопок
 
 # ИНТЕНТЫ
 intents = discord.Intents.default()
@@ -12,16 +13,78 @@ intents.voice_states = True
 intents.members = True
 intents.guilds = True
 
-# СОЗДАНИЕ БОТА: Префикс '!'
+# СОЗДАНИЕ БОТА
 bot = commands.Bot(command_prefix="!", intents=intents)
 queues = {}
+NOW_PLAYING_MESSAGE = {} # Словарь для хранения сообщений с кнопками
+
+# ========== КЛАСС КНОПОК ДЛЯ УПРАВЛЕНИЯ ПЛЕЕРОМ ==========
+class PlayerControls(ui.View):
+    def __init__(self, bot_instance):
+        super().__init__(timeout=None)
+        self.bot = bot_instance
+
+    # Кнопка ПАУЗА/ВОЗОБНОВИТЬ
+    @ui.button(label="⏸️ Пауза / ▶️ Играть", style=discord.ButtonStyle.blurple, custom_id="persistent_pause_resume")
+    async def pause_resume(self, interaction: discord.Interaction, button: ui.Button):
+        vc = interaction.guild.voice_client
+        if not vc:
+            return await interaction.response.send_message("❌ Бот не в голосовом канале.", ephemeral=True)
+
+        if vc.is_playing():
+            vc.pause()
+            await interaction.response.edit_message(content="⏸️ Музыка на паузе.", view=self)
+        elif vc.is_paused():
+            vc.resume()
+            await interaction.response.edit_message(content="▶️ Продолжаем воспроизведение.", view=self)
+        else:
+            await interaction.response.send_message("❌ Нечего ставить на паузу.", ephemeral=True)
+
+    # Кнопка СТОП (Остановить и отключить)
+    @ui.button(label="🛑 Стоп", style=discord.ButtonStyle.red, custom_id="persistent_stop")
+    async def stop_button(self, interaction: discord.Interaction, button: ui.Button):
+        vc = interaction.guild.voice_client
+        if vc:
+            queues[interaction.guild.id] = []
+            vc.stop()
+            await vc.disconnect()
+            await interaction.response.edit_message(content="🛑 Музыка остановлена и бот отключился.", view=None)
+        else:
+            await interaction.response.send_message("❌ Я не в голосовом канале.", ephemeral=True)
+
+    # Кнопка ПРОПУСТИТЬ ТРЕК (Skip)
+    @ui.button(label="⏭️ Пропустить", style=discord.ButtonStyle.green, custom_id="persistent_skip")
+    async def skip_button(self, interaction: discord.Interaction, button: ui.Button):
+        vc = interaction.guild.voice_client
+        if vc and vc.is_playing():
+            vc.stop() # stop() вызывает play_next через after=lambda
+            await interaction.response.send_message("⏭️ Пропускаю текущий трек.", ephemeral=True)
+            # Обновим сообщение с кнопками (удаляем старое, чтобы избежать спама)
+            guild_id = interaction.guild.id
+            if guild_id in NOW_PLAYING_MESSAGE:
+                try:
+                    await NOW_PLAYING_MESSAGE[guild_id].delete()
+                    del NOW_PLAYING_MESSAGE[guild_id]
+                except:
+                    pass
+        else:
+            await interaction.response.send_message("❌ Нечего пропускать.", ephemeral=True)
+
+    # Кнопка ОЧЕРЕДЬ
+    @ui.button(label="📜 Очередь", style=discord.ButtonStyle.grey, custom_id="persistent_queue")
+    async def queue_button(self, interaction: discord.Interaction, button: ui.Button):
+        guild_id = interaction.guild.id
+        if guild_id not in queues or not queues[guild_id]:
+            return await interaction.response.send_message("📭 Очередь пуста.", ephemeral=True)
+        text = "\n".join([f"{i+1}. {t[1]}" for i, t in enumerate(queues[guild_id])])
+        await interaction.response.send_message(f"📜 **Очередь треков:**\n{text}", ephemeral=True)
+
 
 # ========== ОБНОВЛЕНИЕ СТАТУСА И СИНХРОНИЗАЦИЯ КОМАНД ==========
 @bot.event
 async def on_ready():
     print(f"✅ Бот запущен как {bot.user}")
     
-    # КЛЮЧЕВОЙ КОД ДЛЯ СИНХРОНИЗАЦИИ СЛЭШ-КОМАНД
     try:
         synced = await bot.tree.sync()
         print(f"📝 Синхронизировано {len(synced)} слэш-команд.")
@@ -29,7 +92,10 @@ async def on_ready():
         print(f"❌ Не удалось синхронизировать слэш-команды: {e}")
         
     update_voice_status.start()
+    # ДОБАВЛЯЕМ ПЕРСИСТЕНТНОСТЬ КНОПОК
+    bot.add_view(PlayerControls(bot)) 
 
+# ... (update_voice_status остается без изменений) ...
 @tasks.loop(seconds=30)
 async def update_voice_status():
     """Считает людей в войсах и обновляет статус"""
@@ -51,12 +117,20 @@ async def update_voice_status():
         activity=discord.Activity(type=discord.ActivityType.listening, name=status_text)
     )
 
-# ========== МУЗЫКАЛЬНЫЕ КОМАНДЫ ==========
+# ========== МУЗЫКАЛЬНЫЕ КОМАНДЫ (Обновлено) ==========
 
-# Вспомогательная функция (С ЗАДЕРЖКОЙ ОТКЛЮЧЕНИЯ)
+# Вспомогательная функция (С ЗАДЕРЖКОЙ ОТКЛЮЧЕНИЯ И КНОПКАМИ)
 async def play_next(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     vc = interaction.guild.voice_client
+
+    # Удаляем предыдущее сообщение с кнопками
+    if guild_id in NOW_PLAYING_MESSAGE:
+        try:
+            await NOW_PLAYING_MESSAGE[guild_id].delete()
+            del NOW_PLAYING_MESSAGE[guild_id]
+        except Exception:
+            pass # Игнорируем, если сообщение уже удалено
 
     if guild_id in queues and queues[guild_id]:
         url, title = queues[guild_id].pop(0)
@@ -65,7 +139,10 @@ async def play_next(interaction: discord.Interaction):
             discord.FFmpegPCMAudio(url, before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"),
             after=lambda e: asyncio.run_coroutine_threadsafe(play_next(interaction), bot.loop)
         )
-        await interaction.channel.send(f"▶️ Сейчас играет: **{title}**")
+        # Отправляем новое сообщение с кнопками
+        view = PlayerControls(bot)
+        msg = await interaction.channel.send(f"▶️ Сейчас играет: **{title}**", view=view)
+        NOW_PLAYING_MESSAGE[guild_id] = msg
     
     # Исправление мгновенного отключения
     elif vc and not vc.is_playing() and not vc.is_paused():
@@ -78,7 +155,7 @@ async def play_next(interaction: discord.Interaction):
         if vc and not vc.is_playing() and not vc.is_paused():
             await interaction.channel.send("🎵 Очередь пуста — отключаюсь.")
             await vc.disconnect()
-
+            
 # ФОНОВАЯ ЗАДАЧА: Выполняет медленную работу (поиск, подключение)
 async def _play_worker(interaction: discord.Interaction, query: str):
     
@@ -103,7 +180,8 @@ async def _play_worker(interaction: discord.Interaction, query: str):
         query = re.sub(r'(\?|&)(list|start_radio|index)=.*$', '', query)
         query = query.split('&')[0] # Очищаем все остальные параметры
 
-    # 4. Поиск и извлечение информации
+    # 4. Поиск и извлечение информации (Поддержка SoundCloud уже в yt-dlp/default_search)
+    # default_search: 'auto' позволяет искать и по ссылке, и по названию
     ydl_opts = {"format": "bestaudio/best", "quiet": True, "default_search": "auto"}
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -134,58 +212,86 @@ async def _play_worker(interaction: discord.Interaction, query: str):
             discord.FFmpegPCMAudio(stream_url, before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"),
             after=lambda e: asyncio.run_coroutine_threadsafe(play_next(interaction), bot.loop)
         )
-        await interaction.followup.send(f"▶️ Сейчас играет: **{title}**")
+        # Отправляем сообщение с кнопками
+        view = PlayerControls(bot)
+        msg = await interaction.followup.send(f"▶️ Сейчас играет: **{title}**", view=view)
+        NOW_PLAYING_MESSAGE[guild_id] = msg
 
 
-# КОМАНДА /play (ТОЛЬКО ДЛЯ НЕМЕДЛЕННОГО ОТВЕТА)
-@bot.tree.command(name="play", description="Проиграть трек по ссылке или названию.")
-@discord.app_commands.describe(query="Ссылка на YouTube/другой сайт или поисковый запрос")
+# КОМАНДА /play (без изменений, просто вызывает worker)
+@bot.tree.command(name="play", description="Проиграть трек по ссылке (YouTube, SoundCloud) или названию.")
+@discord.app_commands.describe(query="Ссылка на трек или поисковый запрос")
 async def play_slash(interaction: discord.Interaction, query: str):
-    # 1. НЕМЕДЛЕННО ОТВЕЧАЕМ DISCORD'У, ЧТО НАЧАЛИ ДУМАТЬ
     await interaction.response.defer(thinking=True) 
-    
-    # 2. ПЕРЕДАЕМ ВСЮ МЕДЛЕННУЮ РАБОТУ В ФОНОВЫЙ ПОТОК
     bot.loop.create_task(_play_worker(interaction, query))
 
 
-# КОМАНДЫ /pause, /resume, /stop, /queue (без изменений)
+# ========== НОВАЯ КОМАНДА /search (С ВЫБОРОМ) ==========
 
-@bot.tree.command(name="pause", description="Поставить музыку на паузу.")
-async def pause_slash(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc and vc.is_playing():
-        vc.pause()
-        await interaction.response.send_message("⏸ Музыка на паузе.")
-    else:
-        await interaction.response.send_message("❌ Нечего ставить на паузу.")
+class SearchSelect(ui.Select):
+    def __init__(self, options, bot_instance, original_interaction):
+        super().__init__(placeholder="Выбери трек для воспроизведения...", options=options, custom_id="music_search_select")
+        self.bot = bot_instance
+        self.original_interaction = original_interaction
 
-@bot.tree.command(name="resume", description="Продолжить воспроизведение.")
-async def resume_slash(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc and vc.is_paused():
-        vc.resume()
-        await interaction.response.send_message("▶️ Продолжаем воспроизведение.")
-    else:
-        await interaction.response.send_message("❌ Музыка не на паузе.")
+    async def callback(self, interaction: discord.Interaction):
+        # Получаем выбранное название трека
+        selected_title = self.values[0]
+        
+        # Удаляем все кнопки после выбора
+        await interaction.message.delete()
+        
+        # Передаем выбранный трек в _play_worker
+        await interaction.response.defer(thinking=True)
+        bot.loop.create_task(_play_worker(interaction, selected_title))
 
-@bot.tree.command(name="stop", description="Остановить музыку и отключить бота.")
-async def stop_slash(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc:
-        queues[interaction.guild.id] = []
-        vc.stop()
-        await vc.disconnect()
-        await interaction.response.send_message("🛑 Музыка остановлена и бот отключился.")
-    else:
-        await interaction.response.send_message("❌ Я не в голосовом канале.")
 
-@bot.tree.command(name="queue", description="Показать текущую очередь треков.")
-async def queue_slash(interaction: discord.Interaction):
-    guild_id = interaction.guild.id
-    if guild_id not in queues or not queues[guild_id]:
-        return await interaction.response.send_message("📭 Очередь пуста.")
-    text = "\n".join([f"{i+1}. {t[1]}" for i, t in enumerate(queues[guild_id])])
-    await interaction.response.send_message(f"📜 **Очередь треков:**\n{text}")
+@bot.tree.command(name="search", description="Найти трек на YouTube и выбрать из списка.")
+@discord.app_commands.describe(query="Поисковый запрос (название трека)")
+async def search_slash(interaction: discord.Interaction, query: str):
+    if not interaction.user.voice:
+        return await interaction.response.send_message("❌ Ты не в голосовом канале!")
+    
+    await interaction.response.defer(thinking=True)
 
-# Запуск бота с переменной окружения
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "quiet": True,
+        "default_search": "ytsearch5", # Искать 5 результатов на YouTube
+        "extract_flat": "in_playlist" # Быстрее для поиска
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # ydl.extract_info - самая долгая операция!
+            info = await asyncio.to_thread(ydl.extract_info, query, download=False)
+            
+        options = []
+        if "entries" in info:
+            for i, entry in enumerate(info["entries"]):
+                # Берем только первые 5, чтобы не перегружать Select
+                if i >= 5: 
+                    break 
+                
+                title = entry.get("title", "Неизвестный трек")
+                # title будет ключом для повторного поиска в _play_worker
+                options.append(discord.SelectOption(label=title[:100], value=title))
+        
+        if not options:
+             return await interaction.followup.send("❌ Ничего не найдено по твоему запросу.")
+
+        # Создаем Select Menu и View
+        select = SearchSelect(options, bot, interaction)
+        view = ui.View(timeout=60)
+        view.add_item(select)
+
+        await interaction.followup.send(f"🔍 **Результаты поиска по запросу '{query}'**:", view=view)
+
+    except Exception as e:
+        print(f"Ошибка YT-DLP при поиске: {e}")
+        await interaction.followup.send("❌ Произошла ошибка при поиске треков.")
+
+# КОМАНДЫ /pause, /resume, /stop, /queue (Удаляем старые, они теперь в кнопках)
+
+# ... (Запуск бота) ...
 bot.run(os.getenv("TOKEN_BOT"))
