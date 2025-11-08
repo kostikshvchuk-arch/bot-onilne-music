@@ -4,7 +4,7 @@ import yt_dlp
 import asyncio
 import os
 import re
-from discord import ui # Импортируем для кнопок
+from discord import ui 
 
 # ИНТЕНТЫ
 intents = discord.Intents.default()
@@ -17,6 +17,10 @@ intents.guilds = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 queues = {}
 NOW_PLAYING_MESSAGE = {} # Словарь для хранения сообщений с кнопками
+
+# ========== ПУТЬ К COOKIE-ФАЙЛУ ==========
+# !!! ВАЖНО: СОЗДАЙ ФАЙЛ 'youtube_cookies.txt' РЯДОМ С bot.py !!!
+COOKIE_FILE_PATH = "youtube_cookies.txt"
 
 # ========== КЛАСС КНОПОК ДЛЯ УПРАВЛЕНИЯ ПЛЕЕРОМ ==========
 class PlayerControls(ui.View):
@@ -95,7 +99,6 @@ async def on_ready():
     # ДОБАВЛЯЕМ ПЕРСИСТЕНТНОСТЬ КНОПОК
     bot.add_view(PlayerControls(bot)) 
 
-# ... (update_voice_status остается без изменений) ...
 @tasks.loop(seconds=30)
 async def update_voice_status():
     """Считает людей в войсах и обновляет статус"""
@@ -174,30 +177,30 @@ async def _play_worker(interaction: discord.Interaction, query: str):
 
     vc = interaction.guild.voice_client
     
-    # 3. УЛУЧШЕНИЕ: Очистка URL от лишних параметров, таких как &list= или &start_radio=
+    # 3. УЛУЧШЕНИЕ: Очистка URL от лишних параметров
     if re.match(r'https?://(?:www\.)?youtube\.com/watch\?v=', query) or re.match(r'https?://youtu\.be/', query):
-        # Удаляем все, что идет после v=... или youtu.be/... до & (включая &)
         query = re.sub(r'(\?|&)(list|start_radio|index)=.*$', '', query)
-        query = query.split('&')[0] # Очищаем все остальные параметры
+        query = query.split('&')[0]
 
-    # 4. Поиск и извлечение информации (Поддержка SoundCloud уже в yt-dlp/default_search)
-    # default_search: 'auto' позволяет искать и по ссылке, и по названию
-    ydl_opts = {"format": "bestaudio/best", "quiet": True, "default_search": "auto"}
+    # 4. Поиск и извлечение информации (ДОБАВЛЕНО: cookiefile)
+    ydl_opts = {
+        "format": "bestaudio/best", 
+        "quiet": True, 
+        "default_search": "auto",
+        "cookiefile": COOKIE_FILE_PATH # <-- ИСПРАВЛЕНИЕ ОШИБКИ 429
+    }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # ydl.extract_info - самая долгая операция!
             info = await asyncio.to_thread(ydl.extract_info, query, download=False)
             
-            # Если это плейлист (Mix или длинная ссылка), берем первый трек
             if "entries" in info:
-                # Ограничиваемся первым треком из-за потенциально очень больших плейлистов
                 info = info["entries"][0]
             
             stream_url = info["url"]
             title = info.get("title", "Неизвестный трек")
     except Exception as e:
         print(f"Ошибка YT-DLP: {e}")
-        return await interaction.followup.send("❌ Не удалось найти или загрузить трек. Попробуйте другую ссылку.")
+        return await interaction.followup.send("❌ Не удалось найти или загрузить трек. Проверь файл `youtube_cookies.txt`.")
 
     # 5. Добавление в очередь и воспроизведение
     guild_id = interaction.guild.id
@@ -218,7 +221,7 @@ async def _play_worker(interaction: discord.Interaction, query: str):
         NOW_PLAYING_MESSAGE[guild_id] = msg
 
 
-# КОМАНДА /play (без изменений, просто вызывает worker)
+# КОМАНДА /play
 @bot.tree.command(name="play", description="Проиграть трек по ссылке (YouTube, SoundCloud) или названию.")
 @discord.app_commands.describe(query="Ссылка на трек или поисковый запрос")
 async def play_slash(interaction: discord.Interaction, query: str):
@@ -226,7 +229,7 @@ async def play_slash(interaction: discord.Interaction, query: str):
     bot.loop.create_task(_play_worker(interaction, query))
 
 
-# ========== НОВАЯ КОМАНДА /search (С ВЫБОРОМ) ==========
+# ========== КОМАНДА /search (С ВЫБОРОМ) ==========
 
 class SearchSelect(ui.Select):
     def __init__(self, options, bot_instance, original_interaction):
@@ -254,27 +257,26 @@ async def search_slash(interaction: discord.Interaction, query: str):
     
     await interaction.response.defer(thinking=True)
 
+    # ДОБАВЛЕНО: cookiefile для поиска
     ydl_opts = {
         "format": "bestaudio/best",
         "quiet": True,
-        "default_search": "ytsearch5", # Искать 5 результатов на YouTube
-        "extract_flat": "in_playlist" # Быстрее для поиска
+        "default_search": "ytsearch5",
+        "extract_flat": "in_playlist",
+        "cookiefile": COOKIE_FILE_PATH # <-- ИСПРАВЛЕНИЕ ОШИБКИ 429
     }
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # ydl.extract_info - самая долгая операция!
             info = await asyncio.to_thread(ydl.extract_info, query, download=False)
             
         options = []
         if "entries" in info:
             for i, entry in enumerate(info["entries"]):
-                # Берем только первые 5, чтобы не перегружать Select
                 if i >= 5: 
                     break 
                 
                 title = entry.get("title", "Неизвестный трек")
-                # title будет ключом для повторного поиска в _play_worker
                 options.append(discord.SelectOption(label=title[:100], value=title))
         
         if not options:
@@ -291,7 +293,5 @@ async def search_slash(interaction: discord.Interaction, query: str):
         print(f"Ошибка YT-DLP при поиске: {e}")
         await interaction.followup.send("❌ Произошла ошибка при поиске треков.")
 
-# КОМАНДЫ /pause, /resume, /stop, /queue (Удаляем старые, они теперь в кнопках)
-
-# ... (Запуск бота) ...
+# Запуск бота с переменной окружения
 bot.run(os.getenv("TOKEN_BOT"))
