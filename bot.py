@@ -52,7 +52,13 @@ class PlayerControls(ui.View):
             queues[interaction.guild.id] = []
             vc.stop()
             await vc.disconnect()
+            # Обновляем сообщение, чтобы удалить кнопки
             await interaction.response.edit_message(content="🛑 Музыка остановлена и бот отключился.", view=None)
+            
+            # Удаляем ссылку на сообщение из словаря
+            guild_id = interaction.guild.id
+            if guild_id in NOW_PLAYING_MESSAGE:
+                del NOW_PLAYING_MESSAGE[guild_id]
         else:
             await interaction.response.send_message("❌ Я не в голосовом канале.", ephemeral=True)
 
@@ -63,7 +69,7 @@ class PlayerControls(ui.View):
         if vc and vc.is_playing():
             vc.stop() # stop() вызывает play_next через after=lambda
             await interaction.response.send_message("⏭️ Пропускаю текущий трек.", ephemeral=True)
-            # Обновим сообщение с кнопками (удаляем старое, чтобы избежать спама)
+            # Удаляем старое сообщение с кнопками, чтобы новое немедленно появилось
             guild_id = interaction.guild.id
             if guild_id in NOW_PLAYING_MESSAGE:
                 try:
@@ -120,7 +126,7 @@ async def update_voice_status():
         activity=discord.Activity(type=discord.ActivityType.listening, name=status_text)
     )
 
-# ========== МУЗЫКАЛЬНЫЕ КОМАНДЫ (Обновлено) ==========
+# ========== МУЗЫКАЛЬНЫЕ КОМАНДЫ ==========
 
 # Вспомогательная функция (С ЗАДЕРЖКОЙ ОТКЛЮЧЕНИЯ И КНОПКАМИ)
 async def play_next(interaction: discord.Interaction):
@@ -182,7 +188,7 @@ async def _play_worker(interaction: discord.Interaction, query: str):
         query = re.sub(r'(\?|&)(list|start_radio|index)=.*$', '', query)
         query = query.split('&')[0]
 
-    # 4. Поиск и извлечение информации (ДОБАВЛЕНО: cookiefile)
+    # 4. Поиск и извлечение информации (Cookie Fix)
     ydl_opts = {
         "format": "bestaudio/best", 
         "quiet": True, 
@@ -228,6 +234,34 @@ async def play_slash(interaction: discord.Interaction, query: str):
     await interaction.response.defer(thinking=True) 
     bot.loop.create_task(_play_worker(interaction, query))
 
+# НОВАЯ КОМАНДА /stop
+@bot.tree.command(name="stop", description="Остановить музыку и отключить бота.")
+async def stop_slash(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc:
+        # 1. Очищаем очередь
+        guild_id = interaction.guild.id
+        if guild_id in queues:
+            queues[guild_id] = []
+        
+        # 2. Останавливаем воспроизведение
+        vc.stop()
+        
+        # 3. Отключаемся от канала
+        await vc.disconnect()
+        
+        # 4. Удаляем сообщение с кнопками, если оно существует
+        if guild_id in NOW_PLAYING_MESSAGE:
+            try:
+                await NOW_PLAYING_MESSAGE[guild_id].delete()
+                del NOW_PLAYING_MESSAGE[guild_id]
+            except:
+                pass 
+                
+        await interaction.response.send_message("🛑 Музыка остановлена и бот отключился.")
+    else:
+        await interaction.response.send_message("❌ Я не в голосовом канале.", ephemeral=True)
+
 
 # ========== КОМАНДА /search (С ВЫБОРОМ) ==========
 
@@ -238,10 +272,9 @@ class SearchSelect(ui.Select):
         self.original_interaction = original_interaction
 
     async def callback(self, interaction: discord.Interaction):
-        # Получаем выбранное название трека
         selected_title = self.values[0]
         
-        # Удаляем все кнопки после выбора
+        # Удаляем сообщение с выбором
         await interaction.message.delete()
         
         # Передаем выбранный трек в _play_worker
@@ -257,7 +290,7 @@ async def search_slash(interaction: discord.Interaction, query: str):
     
     await interaction.response.defer(thinking=True)
 
-    # ДОБАВЛЕНО: cookiefile для поиска
+    # Cookie Fix для поиска
     ydl_opts = {
         "format": "bestaudio/best",
         "quiet": True,
